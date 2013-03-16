@@ -1,0 +1,158 @@
+I've been interested in BDD as a better way of specifying tests. Readable tests are easier to debug, and to spot missing edge cases.
+
+Very difficult to get a readable DSL in C#; tools like SpecFlow take a different tack of converting a human-readable DSL (Gherkin) into code.
+If business is to read the specs then these tools can be beneficial; if not, then lighter weight tools might be better.
+
+NaturalSpec leverages F#'s DSL strengths to produce very readable tests. I was totally blown away by it when I came across it. 
+
+It uses the forward pipe operator to thread the sut through the When and Then functions, produsing very readable code with no external state.
+I wanted to understand how it worked
+under the hood, but my F# skills weren't up to the task. So, to help myself learn I decided to write my own variant at the same time.
+
+I'm going to describe that variant, but if you want a production-grade solution, please use NaturalSpec!
+
+The general form of a Given/When/Then spec is:
+
+	Given precondition
+	When action
+	Then expectation
+	
+We can convert this into (theeoretically) valid F# code by piping each clause into the next:
+
+	Given precondition |>
+	When action        |>
+	Then expectation
+
+So how do we define the Given/When/Then functions such that they compile?
+
+First let's deal with the Given function:
+
+    let Given precondition =
+        precondition
+
+This is just some syntactic sugar to make the test more readable; it does nothing but return the precondition. 
+
+We'll need to start looking at function signatures soon, so let's start with this function, which has a signature of 'a -> 'a. We can use like
+ 
+	Given (Stack<int>)
+	
+or (assuming ``a binary tree of depth 3`` is already defined)
+
+	Given ``a binary tree of depth 3``
+	
+Notice how F#'s backticks allow more readable tests.
+
+The When function needs to execute an action on the precondition (which is piped in from the result of the Given clause) and pass on the result to the Then.
+	
+So it could look like:
+
+    let When action precondition = 
+		action precondition
+
+which has the signature ('a -> 'b) -> 'a -> 'b. We can then use it in our test like
+
+	let ``is pushed onto a stack`` n =
+		let s = Stack<int>()
+		s.Push n
+		s
+		
+    let ``stack is popped`` (stack: Stack<int>) = 
+        let v = stack.Pop()
+        v
+		
+    let ``Basic example`` () =
+        Given (123 |> ``is pushed onto a stack``) |>
+        When ``stack is popped``
+	
+Notice that ``stack is popped`` takes a Stack<int> as its input but returns just the popped value, not the entire stack.
+
+Now we need to assert against the result. The idea here was to use NUnit's asserts rather than writing custom ones, but to wrap them in meaningful syntax.
+So Then needs to test the result which is piped in from the result of the When clause) against an expectation. Naively, we could assume it takes the form:
+
+	let Then expectation result = 
+		expectation result
+		
+If we look at the signaure, it is ('a -> 'b) -> 'a -> 'b. Seems about right, though I don't expect Then to return anything meaningful, so I would expect 'b to be unit.
+However, let's try it "as is" before messing with the signature.
+
+As a first attempt how about trying to make the following syntax compile?
+
+    let ``Basic example`` () =
+        Given (123 |> ``is pushed onto a stack``) |>
+        When ``stack is popped`` |>
+		Then ``result is 123``
+		
+In other words we are trying to make "Then ``result is 123`` actual_value" have the signature ('a -> 'b) -> 'a -> 'b.  But the whole clause is 
+just going to assert, it will return unit, so the signature we are gunning for is ('a -> unit) -> 'a -> unit.
+So, partially applying ``result is 123`` to Then needs to yield a function with sigature 'a -> unit. So ``result is 123`` must have a signature of 'a -> 'unit.
+So we can try this:
+
+    let ``result is 123`` (actual: 'a) =
+        Assert.AreEqual(123, actual)
+
+If we try compile and run this, we get a passing test! And if we change the Given to push 999 onto the stack, we get the expected failing test! 
+
+But we don't want to hardcode 123 into expectation. We would prefer to write:
+
+    let ``Basic example`` () =
+        Given (123 |> ``is pushed onto a stack``) |>
+        When ``stack is popped`` |>
+		Then ``result is`` 123
+
+So now we want to make "Then ``result is`` expected_value actual_value" have the signature ('a -> unit) -> 'a -> unit.
+Again, partially applying ``result is`` to Then needs to yield a function with signature 'c -> 'c -> unit (I've changed the generic letter for clarity) i.e. 'a must be ('c -> 'c).
+So, ``result is`` must have the signature ('c -> 'c -> unit). Let's try:
+
+    let ``result is`` (expected: 'a) (actual: 'a) =
+        Assert.AreEqual(expected, actual)
+
+If we try compile and run this, we still get a passing test! And this time if we change the expected value to 999, we still get the expected failing test! 
+
+Can we make the syntax more readable and in line with BDD terminology? How about:
+
+    let ``Basic example`` () =
+        Given (123 |> ``is pushed onto a stack``) |>
+        When ``stack is popped`` |>
+		Then it should ``return`` 123
+
+Comparing to the previous example, we can imagine that ``return`` takes the place of ``result is``, with "it" and "should" just being syntactic "filler words".
+i.e. we are looking for signature for "it" and "should" such that "Then return 123" and "Then it should return 123" have the same signature. What function does nothing?
+How about:
+
+	let it f = f
+	
+and 
+	
+	let should f = f
+	
+They both have signature 'a -> 'a. So in the above example, with ``return`` having signature ('c -> 'c -> unit), both "should return" and "it should return" also have
+signature ('c -> 'c -> unit). This all looks promising...
+
+...and yes, code still compiles and we still have the expected passing and failing test.
+
+---------------------
+
+Looking at the signature of When, the return type is TestContext<'b>, which is piped into the "Then" clause. 
+So the signature of "Then", when using the result of the "When", becomes (TestContext<'a> -> 'b) -> TestContext<'a> -> 'b. Comparing this to our target clause, it means
+that "``result is`` expected" must have a signature of 
+
+
+
+-----------------------
+
+A couple of things I wasn't so keen on with NaturalSpec:
+
+1) Having to use Verify at the end
+2) Having to use [ExpectedException] rather than being able to assert that a particular line threw an exception
+
+Decided that my variant would try to tackle these. Turns out that 1) is only required by NaturalSpec when verifying against mocks.
+
+NS doesn't handle 2) because it doesn't attempt to match exceptions. In order to do that, I thought I'd need to store any exception that occurs during the When.
+
+------------------------------
+
+In other words, the Then could receive a state, or an exception. We can model this as:
+
+    type TestContext<'a> = 
+    | State of 'a
+    | Exception of exn
