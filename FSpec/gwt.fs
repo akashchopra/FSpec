@@ -36,6 +36,8 @@ module FSpec =
 
     let should f = f
 
+    let be f = f
+
     let ``return`` (expected: 'a) (context: TestContext<'a>) =
         Assert.AreEqual(expected, context.ToState)
 
@@ -49,6 +51,25 @@ module FSpec =
         Assert.IsInstanceOf<'e>(ex)
         Assert.IsTrue(check ex, "Exception condition not met:\n\n" + ex.ToString())
 
+    let inline (+/-) (expected) (tolerance) (context: TestContext<_>) =
+        let zero = LanguagePrimitives.GenericZero
+        let actual = context.ToState
+        let absDiff = if expected > actual then
+                        expected - actual
+                      else
+                        actual - expected
+
+        let absTolerance = if tolerance < zero then
+                                -tolerance
+                           else
+                                tolerance
+
+        if absDiff < absTolerance then
+            ()
+        else
+            let msg = sprintf "Expected: %s +/- %s\nBut was:  %s" <| expected.ToString() <| tolerance.ToString() <| actual.ToString()
+            raise <| AssertionException(msg)
+
 module FSpecExamples =
     open FSpec
 
@@ -60,6 +81,10 @@ module FSpecExamples =
     let ``stack is popped`` (stack: Stack<_>) = 
         let v = stack.Pop()
         v
+
+    let inline ``dividing by 3`` (n:^a) : ^a =
+        let three:^a = (Seq.init 3 (fun _ -> LanguagePrimitives.GenericOne)) |> Seq.sum
+        n / three
 
     [<Test>]
     let ``Basic passing example`` () =
@@ -85,3 +110,15 @@ module FSpecExamples =
         Given (Stack<string>()) |>
         When ``stack is popped`` |>
         Then it should throw (specific<InvalidOperationException> (fun e -> e.Message = "Stack empty."))
+
+    [<Test>]
+    let ``Comparing floats``() =
+        Given 1.0 |>
+        When ``dividing by 3`` |>
+        Then it should be (0.333333333 +/- 0.00000001)
+
+    [<Test>]
+    let ``Comparing decimals``() =
+        Given 1.0m |>
+        When ``dividing by 3`` |>
+        Then it should be (0.333333333m +/- 0.00000001m)
